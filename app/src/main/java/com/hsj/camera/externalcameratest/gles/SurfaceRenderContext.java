@@ -109,8 +109,16 @@ public class SurfaceRenderContext {
         EGL14.eglTerminate(eglDisplay);
     }
 
+    public void swapBuffers() {
+        EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+    }
+
     public void swapBuffers(long presentationTimeNs) {
         EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, presentationTimeNs);
         EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+    }
+
+    public void makeCurrent() {
+        EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
     }
 }

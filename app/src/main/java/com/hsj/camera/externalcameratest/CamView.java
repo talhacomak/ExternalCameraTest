@@ -1,33 +1,33 @@
 package com.hsj.camera.externalcameratest;
 
 import android.content.Context;
-import android.opengl.GLSurfaceView;
+import android.media.MediaRecorder;
 import android.util.AttributeSet;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 
-import com.hsj.camera.externalcameratest.encoder.TextureMovieEncoder;
+import androidx.annotation.NonNull;
+
+import com.hsj.camera.externalcameratest.gles.SurfaceRenderContext;
+
 import java.io.File;
+import java.io.IOException;
 
-import javax.microedition.khronos.egl.EGL10;
-import javax.microedition.khronos.egl.EGLConfig;
-import javax.microedition.khronos.egl.EGLContext;
-import javax.microedition.khronos.egl.EGLDisplay;
+public class CamView extends SurfaceView {
+	private CamRender mRender;
+	private MediaRecorder mediaRecorder;
 
-public class CamView extends GLSurfaceView {
-	private Context context;
-	private CamRender mRender = null;
-	private boolean mRecordingEnabled;
-	// this is static so it survives activity restarts
-	private static TextureMovieEncoder sVideoEncoder;
+	private SurfaceRenderContext baseContext; // Only used as a connection between the other contexts
+	private SurfaceRenderContext previewContext; // Used to draw the preview
+	private SurfaceRenderContext recorderContext; // Used to draw to the encoder surface
 
 	public CamView(Context context) {
 		super(context);
-		this.context = context;
 		init();
 	}
 
 	public CamView(Context context, AttributeSet attrs) {
 		super(context, attrs);
-		this.context = context;
 		init();
 	}
 
@@ -51,104 +51,98 @@ public class CamView extends GLSurfaceView {
 	}
 
 	private void init() {
-		// Define a handler that receives camera-control messages from other threads.  All calls
-		// to Camera must be made on the same thread.  Note we create this before the renderer
-		// thread, so we know the fully-constructed object will be visible.
-		sVideoEncoder = new TextureMovieEncoder();
-		mRecordingEnabled = sVideoEncoder.isRecording();
-		if (mRecordingEnabled) {
-			sVideoEncoder.stopRecording();
-			mRecordingEnabled = false;
-		}
-		setEGLContextFactory(new ContextFactory());
-		setEGLContextClientVersion(2);
-		setEGLConfigChooser(new ConfigChooser(5, 6, 5, 0, 0, 0));
-		if (null == mRender)
-			mRender = new CamRender(sVideoEncoder);
-		setRenderer(mRender);
-		setRenderMode(RENDERMODE_WHEN_DIRTY);
+		baseContext = new SurfaceRenderContext(null, 1, 1, null);
+
+		getHolder().addCallback(new SurfaceHolder.Callback() {
+			@Override
+			public void surfaceCreated(@NonNull SurfaceHolder holder) {
+
+			}
+
+			@Override
+			public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {
+				if(previewContext != null)
+					previewContext.destroy();
+				previewContext = new SurfaceRenderContext(holder.getSurface(), width, height, baseContext.getEglContext());
+			}
+
+			@Override
+			public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+				previewContext.destroy();
+				previewContext = null;
+			}
+		});
+
+		mRender = new CamRender();
+		baseContext.makeCurrent();
+		mRender.onSurfaceCreated(null, null);
 	}
 
-	public void changeRecordingState(File videoFile, int frameRate) {
-		mRender.changeRecordingState(videoFile, frameRate, true);
+	private void makeMediaRecorder(File videoFile, int frameRate, int width, int height) {
+		mediaRecorder = new MediaRecorder();
+
+		mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+		mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+
+		mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+
+		mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.DEFAULT);
+		mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.DEFAULT);
+
+		mediaRecorder.setVideoSize(width, height);
+		mediaRecorder.setVideoEncodingBitRate(300000);
+		mediaRecorder.setVideoFrameRate(frameRate);
+
+		mediaRecorder.setOutputFile(videoFile);
+		try {
+			mediaRecorder.prepare();
+		} catch (IOException e) {
+			throw new RuntimeException(e);
+		}
+
+		recorderContext = new SurfaceRenderContext(mediaRecorder.getSurface(), width, height, baseContext.getEglContext());
+	}
+
+	private void destroyMediaRecorder() {
+		mediaRecorder.release();
+		mediaRecorder = null;
+		recorderContext.destroy();
+	}
+
+	public void changeRecordingState(File videoFile, int frameRate, int width, int height) {
+		if(mediaRecorder != null)
+			destroyMediaRecorder();
+		makeMediaRecorder(videoFile, frameRate, width, height);
+
+		mediaRecorder.start();
 	}
 
 	public void changeRecordingState(boolean state) {
-		mRender.changeRecordingState(state);
+		if(state)
+			mediaRecorder.start();
+		else
+			mediaRecorder.stop();
 	}
 
+	int frame = 0;
+	public void onFrameAvailable() {
+		mRender.setFrame(frame);
 
-	private static class ContextFactory implements EGLContextFactory {
-		public EGLContext createContext(EGL10 egl, EGLDisplay display, EGLConfig eglConfig) {
-			int[] attrib = {0x3098, 2, EGL10.EGL_NONE};
-			return egl.eglCreateContext(display, eglConfig, EGL10.EGL_NO_CONTEXT, attrib);
+		if(previewContext != null) {
+			previewContext.makeCurrent();
+			mRender.onDrawFrame(null);
+			previewContext.swapBuffers();
 		}
 
-		public void destroyContext(EGL10 egl, EGLDisplay display, EGLContext context) {
-			egl.eglDestroyContext(display, context);
+		if(recorderContext != null) {
+			recorderContext.makeCurrent();
+			mRender.onDrawFrame(null);
+			recorderContext.swapBuffers();
 		}
+
+		frame++;
+		if (frame == 60)
+			frame = 0;
 	}
-
-	private static class ConfigChooser implements EGLConfigChooser {
-		ConfigChooser(int r, int g, int b, int a, int depth, int stencil) {
-			mRedSize = r;
-			mGreenSize = g;
-			mBlueSize = b;
-			mAlphaSize = a;
-			mDepthSize = depth;
-			mStencilSize = stencil;
-		}
-
-		private static final int[] s_configAttribs2 = {EGL10.EGL_RED_SIZE, 4, EGL10.EGL_GREEN_SIZE, 4, EGL10.EGL_BLUE_SIZE, 4, EGL10.EGL_RENDERABLE_TYPE, 4, EGL10.EGL_NONE};
-
-		public EGLConfig chooseConfig(EGL10 egl, EGLDisplay display) {
-			int[] num_config = new int[1];
-			egl.eglChooseConfig(display, s_configAttribs2, null, 0, num_config);
-			int numConfigs = num_config[0];
-			if (numConfigs <= 0)
-				throw new IllegalArgumentException("No configs match configSpec");
-			EGLConfig[] configs = new EGLConfig[numConfigs];
-			egl.eglChooseConfig(display, s_configAttribs2, configs, numConfigs, num_config);
-			return chooseConfig(egl, display, configs);
-		}
-
-		EGLConfig chooseConfig(EGL10 egl, EGLDisplay display, EGLConfig[] configs) {
-			for (EGLConfig config : configs) {
-				int d = findConfigAttrib(egl, display, config, EGL10.EGL_DEPTH_SIZE);
-				int s = findConfigAttrib(egl, display, config, EGL10.EGL_STENCIL_SIZE);
-				if (d < mDepthSize || s < mStencilSize)
-					continue;
-				int r = findConfigAttrib(egl, display, config, EGL10.EGL_RED_SIZE);
-				int g = findConfigAttrib(egl, display, config, EGL10.EGL_GREEN_SIZE);
-				int b = findConfigAttrib(egl, display, config, EGL10.EGL_BLUE_SIZE);
-				int a = findConfigAttrib(egl, display, config, EGL10.EGL_ALPHA_SIZE);
-
-				if (r == mRedSize && g == mGreenSize && b == mBlueSize && a == mAlphaSize)
-					return config;
-			}
-			return null;
-		}
-
-		private int findConfigAttrib(EGL10 egl, EGLDisplay display, EGLConfig config, int attribute) {
-			if (egl.eglGetConfigAttrib(display, config, attribute, mValue))
-				return mValue[0];
-			return 0;
-		}
-
-		int mRedSize;
-		int mGreenSize;
-		int mBlueSize;
-		int mAlphaSize;
-		int mDepthSize;
-		int mStencilSize;
-		private final int[] mValue = new int[1];
-	}
-
-	@Override
-	public void onPause() {
-		super.onPause();
-		mRender.notifyPausing();
-	}
-
 
 }

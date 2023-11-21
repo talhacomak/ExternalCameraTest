@@ -5,17 +5,13 @@ import static android.opengl.GLES10.GL_TEXTURE_2D;
 import static android.opengl.GLES10.GL_UNSIGNED_BYTE;
 import static android.opengl.GLES10.glTexImage2D;
 
-import android.graphics.SurfaceTexture;
-import android.opengl.EGL14;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.util.Log;
 
-import com.hsj.camera.externalcameratest.encoder.TextureMovieEncoder;
 import com.hsj.camera.externalcameratest.gles.FullFrameRect;
 import com.hsj.camera.externalcameratest.gles.Texture2dProgram;
 
-import java.io.File;
 import java.nio.ByteBuffer;
 
 import javax.microedition.khronos.egl.EGLConfig;
@@ -25,15 +21,8 @@ public class CamRender implements GLSurfaceView.Renderer {
 	private int mCurrentTextureId;
 	private final float[] mVertices = new float[16];
 
-	private static final int RECORDING_OFF = 0;
-	private static final int RECORDING_ON = 1;
-	private static final int RECORDING_RESUMED = 2;
-	private final TextureMovieEncoder mVideoEncoder;
-	private File mOutputFile;
 	private int mFrameRate;
 	private FullFrameRect mFullScreen;
-	private boolean mRecordingEnabled;
-	private int mRecordingStatus;
 
 	// width/height of the incoming camera preview frames
 	private boolean mIncomingSizeUpdated;
@@ -42,10 +31,8 @@ public class CamRender implements GLSurfaceView.Renderer {
 
 	private int mCurrentFilter;
 	private int mNewFilter;
-	private EGLConfig mEGLConfig;
 	private Texture2dProgram.ProgramType mProgramType = Texture2dProgram.ProgramType.TOUPCAM_DEF;
 
-	private SurfaceTexture mSurfaceTexture;
 
 	static final int FILTER_NONE = 0;
 	static final int FILTER_BLACK_WHITE = 1;
@@ -59,13 +46,10 @@ public class CamRender implements GLSurfaceView.Renderer {
 	private byte[] testData1;
 	private byte[] testData2;
 
-	CamRender(TextureMovieEncoder movieEncoder) {
-		mVideoEncoder = movieEncoder;
+	private int frame = 0;
 
+	CamRender() {
 		mCurrentTextureId = -1;
-
-		mRecordingStatus = -1;
-		mRecordingEnabled = false;
 
 		mIncomingSizeUpdated = false;
 		mIncomingWidth = 2048;
@@ -88,10 +72,6 @@ public class CamRender implements GLSurfaceView.Renderer {
 
 	// TODO mIncomingWidth & mIncomingHeight ?
 	public void notifyPausing() {
-		if (mSurfaceTexture != null) {
-			mSurfaceTexture.release();
-			mSurfaceTexture = null;
-		}
 		if (mFullScreen != null) {
 			mFullScreen.release(false);     // assume the GLSurfaceView EGL context is about
 			mFullScreen = null;             //  to be destroyed
@@ -102,18 +82,8 @@ public class CamRender implements GLSurfaceView.Renderer {
 
 	@Override
 	public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-		mEGLConfig = config;
-		mRecordingEnabled = mVideoEncoder.isRecording();
-		if (mRecordingEnabled) {
-			mRecordingStatus = RECORDING_RESUMED;
-		} else {
-			mRecordingStatus = RECORDING_OFF;
-		}
-
 		mFullScreen = new FullFrameRect(new Texture2dProgram(mProgramType));
 		mCurrentTextureId = mFullScreen.getProgram().getTextureId();
-
-		mSurfaceTexture = new SurfaceTexture(mCurrentTextureId);
 	}
 
 	@Override
@@ -121,7 +91,6 @@ public class CamRender implements GLSurfaceView.Renderer {
 		GLES20.glViewport(0, 0, width, height);
 	}
 
-	int counter = 0;
 	@Override
 	public void onDrawFrame(GL10 gl10) {
 		if (mCurrentTextureId == 0)
@@ -137,10 +106,6 @@ public class CamRender implements GLSurfaceView.Renderer {
 
 		if (mCurrentFilter != mNewFilter) {
 			updateFilter();
-			if (mRecordingEnabled){
-				mVideoEncoder.setProgram(mProgramType);
-				mVideoEncoder.updateSharedContext(EGL14.eglGetCurrentContext());
-			}
 		}
 		if (mIncomingSizeUpdated) {
 			mFullScreen.getProgram().setTexSize(mIncomingWidth, mIncomingHeight);
@@ -150,19 +115,12 @@ public class CamRender implements GLSurfaceView.Renderer {
 		mFullScreen.preDrawFrame();
 
 		// nativeLib.nativeUpdate(); // native function replaced with below function for test
-		if (counter < 30)
+		if (frame < 30)
 			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, mIncomingWidth, mIncomingHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, ByteBuffer.wrap(testData1));
 		else
 			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, mIncomingWidth, mIncomingHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, ByteBuffer.wrap(testData2));
 
-		counter ++;
-		if (counter == 60)
-			counter = 0;
-
-		mSurfaceTexture.getTransformMatrix(mVertices);
 		mFullScreen.drawFrame(mCurrentTextureId, mVertices);
-
-		handleRecorder();
 	}
 
 	public void updateFilter() {
@@ -235,65 +193,6 @@ public class CamRender implements GLSurfaceView.Renderer {
 		mCurrentFilter = mNewFilter;
 	}
 
-	private void handleRecorder() {
-		if (mRecordingEnabled) {
-			switch (mRecordingStatus) {
-				case RECORDING_OFF:
-					mVideoEncoder.setProgram(mProgramType);
-					int bitrate = 24 * mIncomingWidth * mIncomingHeight * mFrameRate;
-					mVideoEncoder.startRecording(new TextureMovieEncoder.EncoderConfig(mOutputFile,
-							mIncomingWidth, mIncomingHeight, bitrate, mFrameRate, EGL14.eglGetCurrentContext()));
-					mRecordingStatus = RECORDING_ON;
-					break;
-				case RECORDING_RESUMED:
-					mVideoEncoder.setProgram(mProgramType);
-					mVideoEncoder.updateSharedContext(EGL14.eglGetCurrentContext());
-					mRecordingStatus = RECORDING_ON;
-					break;
-				case RECORDING_ON:
-					// yay
-					break;
-				default:
-					throw new RuntimeException("unknown status " + mRecordingStatus);
-			}
-		} else {
-			switch (mRecordingStatus) {
-				case RECORDING_ON:
-				case RECORDING_RESUMED:
-					mVideoEncoder.stopRecording();
-					mRecordingStatus = RECORDING_OFF;
-					break;
-				case RECORDING_OFF:
-					// yay
-					break;
-				default:
-					throw new RuntimeException("unknown status " + mRecordingStatus);
-			}
-		}
-
-		// Set the video encoder's texture name.  We only need to do this once, but in the
-		// current implementation it has to happen after the video encoder is started, so
-		// we just do it here.
-		//
-		// TODO: be less lame.
-		mVideoEncoder.setTextureId(mCurrentTextureId);
-
-		// Tell the video encoder thread that a new frame is available.
-		// This will be ignored if we're not actually recording.
-
-		mVideoEncoder.frameAvailable(mSurfaceTexture); // mCameraHandler.getTimeStamp();
-	}
-
-	public void changeRecordingState(boolean isRecording) {
-		mRecordingEnabled = isRecording;
-	}
-
-	public void changeRecordingState(File recFile, int frameRate, boolean isRecording) {
-		mOutputFile = recFile;
-		mRecordingEnabled = isRecording;
-		mFrameRate = frameRate;
-	}
-
 	/**
 	 * Changes the filter that we're applying to the camera preview.
 	 */
@@ -319,4 +218,7 @@ public class CamRender implements GLSurfaceView.Renderer {
 			mFullScreen.getProgram().GenTexture();
 	}
 
+	public void setFrame(int frame) {
+		this.frame = frame;
+	}
 }

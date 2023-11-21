@@ -65,7 +65,9 @@ public class MainActivity extends AppCompatActivity {
                         Toast.makeText(context, "Audio Permission Problem!", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    mCameraView.changeRecordingState(videoFile, 30);
+                    
+                    // TODO: Get the right resolution from the incoming video frames
+                    mCameraView.changeRecordingState(videoFile, 30, 1280, 720);
                     isRecording = true;
                     Log.d("TAG", "record file: " + videoFile.getPath());
                     Toast.makeText(context, "Recording Started...", Toast.LENGTH_SHORT).show();
@@ -154,7 +156,7 @@ public class MainActivity extends AppCompatActivity {
         timer.scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
-                runOnUiThread(() -> mCameraView.requestRender());
+                runOnUiThread(() -> mCameraView.onFrameAvailable());
             }
         }, 2000, 1000/30);
     }
@@ -180,7 +182,7 @@ public class MainActivity extends AppCompatActivity {
                 timer.scheduleAtFixedRate(new TimerTask() {
                     @Override
                     public void run() {
-                        runOnUiThread(() -> mCameraView.requestRender());
+                        runOnUiThread(() -> mCameraView.onFrameAvailable());
                     }
                 }, 2000, 1000/30);
             } else {
